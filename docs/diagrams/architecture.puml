@@ -1,0 +1,121 @@
+@startuml Architecture Diagram - DAAI System
+
+!theme plain
+skinparam componentStyle rectangle
+skinparam roundcorner 10
+
+package "External" {
+    actor "Пользователь" as User
+}
+
+package "DAAI Service" {
+    component "DAAI\nMaster Service" as DAAI {
+        interface "agent_action_1" as EP1
+        interface "agent_action_2" as EP2
+        interface "agent_action_N" as EPN
+    }
+    
+    component "MCP Client" as MCPClient
+    component "Business Logic\n(Authorization,\nRequest Processing)" as BusinessLogic
+    component "Logging Service" as Logging
+    component "Response Processor\n(LLM Integration)" as ResponseProcessor
+}
+
+package "Data Storage" {
+    database "Postgres\n(Pangolin)" as Postgres {
+        note right: Логирование метаданных,\nвременные метки,\nидентификаторы запросов
+    }
+    
+    database "Clickhouse" as Clickhouse {
+        note right: Метрики, события,\nаналитические данные,\nдолгосрочное хранение
+    }
+}
+
+package "KaaS Service" {
+    component "KaaS\n(REST/gRPC API)" as KaaS {
+        note right: Управление кластерами,\nпредоставление информации\nо кластерах
+    }
+}
+
+package "Parent Cluster\nKubernetes" {
+    component "MCP Server\n(kmcp)" as MCPServer {
+        note right: Запускает kagent tools\nдля анализа кластеров
+    }
+    
+    component "kagent tools" as Tools {
+        component "kubectl_get_pods" as Tool1
+        component "kubectl_get_nodes" as Tool2
+        component "get_events" as Tool3
+        component "other_tools" as ToolN
+    }
+    
+    cloud "Parent Cluster\nKubernetes API" as ParentK8s {
+        note right: Основной кластер,\nсодержит Children Clusters
+    }
+}
+
+cloud "Children Clusters\nKubernetes" as ChildrenK8s {
+    note right: Множество дочерних\nкластеров для анализа
+}
+
+package "AI Services" {
+    component "IDP\n(RAG)" as IDP {
+        note right: Retrieval-Augmented Generation\nПоиск релевантной документации\nВекторный поиск
+    }
+    
+    component "GigaChat\nLLM" as GigaChat {
+        note right: Обработка результатов анализа\nГенерация ответов с контекстом\nАнализ и рекомендации
+    }
+}
+
+' Connections
+User --> EP1 : HTTP POST
+User --> EP2 : HTTP POST
+User --> EPN : HTTP POST
+
+EP1 --> BusinessLogic
+EP2 --> BusinessLogic
+EPN --> BusinessLogic
+
+BusinessLogic --> Logging
+Logging --> Postgres : Write logs
+Logging --> Clickhouse : Write metrics
+
+BusinessLogic --> KaaS : REST/gRPC\nGet cluster info
+
+BusinessLogic --> MCPClient : Call tools\n{clusterId, toolNames}
+
+MCPClient --> MCPServer : MCP Protocol\nHTTP POST
+
+MCPServer --> Tools : Execute tool
+Tools --> Tool1
+Tools --> Tool2
+Tools --> Tool3
+Tools --> ToolN
+
+Tool1 --> ParentK8s : kubectl/API calls
+Tool2 --> ParentK8s : kubectl/API calls
+Tool3 --> ParentK8s : kubectl/API calls
+ToolN --> ParentK8s : kubectl/API calls
+
+Tool1 --> ChildrenK8s : kubectl/API calls\n(context switching)
+Tool2 --> ChildrenK8s : kubectl/API calls
+Tool3 --> ChildrenK8s : kubectl/API calls
+ToolN --> ChildrenK8s : kubectl/API calls
+
+Tools --> MCPServer : Results
+MCPServer --> MCPClient : MCP Response
+MCPClient --> BusinessLogic : Tool results
+
+BusinessLogic --> ResponseProcessor : Process results
+ResponseProcessor --> IDP : RAG query\nGet documentation context
+IDP --> ResponseProcessor : Relevant context\nfrom documentation
+ResponseProcessor --> GigaChat : LLM request\n{results, context}
+GigaChat --> ResponseProcessor : Processed response\n{analysis, recommendations}
+ResponseProcessor --> BusinessLogic : Enhanced response
+BusinessLogic --> User : HTTP Response\n{results, analysis, context}
+
+KaaS --> ParentK8s : Cluster management
+KaaS --> ChildrenK8s : Cluster management
+
+@enduml

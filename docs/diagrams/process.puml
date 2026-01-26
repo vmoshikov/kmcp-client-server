@@ -1,0 +1,129 @@
+@startuml Process Diagram - DropApp AI Hub Request Processing
+
+!theme plain
+skinparam activity {
+    BackgroundColor #E1F5FF
+    BorderColor #01579B
+    FontColor #000000
+}
+skinparam arrow {
+    Color #01579B
+}
+skinparam note {
+    BackgroundColor #FFF9C4
+    BorderColor #F57F17
+}
+
+start
+
+:Пользователь отправляет запрос\nPOST /agent_action_1/2...\n{clusterId, action, params};
+
+partition "DropApp AI Hub - Логирование" {
+    :Логирование запроса в Postgres\n(Pangolin);
+    note right: Метаданные запроса,\nвременные метки,\nидентификаторы
+    :Логирование в Clickhouse;
+    note right: Метрики, события,\nаналитические данные
+}
+
+partition "DropApp AI Hub - Бизнес-логика" {
+    :Авторизация пользователя;
+    if (Авторизация успешна?) then (нет)
+        :Возврат ошибки 401;
+        stop
+    endif
+    
+    :Валидация запроса;
+    if (Запрос валиден?) then (нет)
+        :Возврат ошибки 400;
+        stop
+    endif
+    
+    :Обработка бизнес-логики;
+    note right: Применение правил,\nтрансформация данных
+}
+
+partition "KaaS - Получение информации о кластере" {
+    :Запрос к KaaS\nREST/gRPC\n{clusterId};
+    :KaaS определяет тип кластера\n(Parent/Child);
+    :Получение информации:\n- clusterType\n- kubeconfig\n- endpoint\n- credentials;
+    if (Кластер найден?) then (нет)
+        :Возврат ошибки 404;
+        stop
+    endif
+}
+
+partition "MCP Client - Формирование запроса" {
+    :Создание MCP Client;
+    :Формирование MCP запроса\n{method: "tools/call",\n name: toolName,\n arguments: {...}};
+    :Добавление информации о кластере\nв параметры tools;
+}
+
+partition "MCP Server (kmcp) - Выполнение" {
+    :Отправка запроса к MCP Server\nв Parent Cluster;
+    :MCP Server получает запрос;
+    :Определение tool для выполнения;
+    
+    fork
+        :Запуск tool 1\n(kubectl_get_pods);
+    fork again
+        :Запуск tool 2\n(kubectl_get_nodes);
+    fork again
+        :Запуск tool N\n(...);
+    end fork
+    
+    :Сбор результатов всех tools;
+}
+
+partition "kagent tools - Анализ кластера" {
+    if (Анализ Parent Cluster?) then (да)
+        :Подключение к Parent Cluster\nчерез kubeconfig;
+        :Выполнение kubectl команд\nили Kubernetes API запросов;
+        :Анализ состояния Parent Cluster;
+    else (Анализ Children Cluster)
+        :Подключение к Children Cluster\nчерез kubeconfig;
+        :Выполнение kubectl команд\nили Kubernetes API запросов;
+        :Анализ состояния Children Cluster;
+    endif
+    
+    :Сбор результатов анализа;
+    note right: Pods, Nodes, Events,\nResources, Metrics
+}
+
+partition "MCP Server - Возврат результатов" {
+    :Формирование MCP Response\n{result: {...}, error: null};
+    :Отправка ответа MCP Client;
+}
+
+partition "DropApp AI Hub - Обработка результатов" {
+    :Получение результатов от MCP Client;
+    :Обработка и агрегация данных;
+    note right: Объединение результатов\nнескольких tools,\nтрансформация формата
+    :Логирование результатов\nв Postgres и Clickhouse;
+}
+
+partition "IDP (RAG) - Получение контекста" {
+    :Формирование запроса к IDP\n{query: результаты анализа,\n clusterId, toolNames};
+    :IDP выполняет векторный поиск\nв документации;
+    :Получение релевантного контекста\nиз документации;
+    note right: Релевантные документы,\nпримеры, best practices,\nрекомендации
+    if (Контекст найден?) then (нет)
+        :Использование базового контекста;
+    endif
+}
+
+partition "GigaChat LLM - Обработка ответа" {
+    :Формирование промпта для LLM\n{results, context, instructions};
+    :Отправка запроса к GigaChat API;
+    :GigaChat анализирует результаты\nс учетом контекста из документации;
+    :Генерация структурированного ответа;
+    note right: Анализ, рекомендации,\nинтерпретация результатов,\nвыводы
+    :Получение обработанного ответа\nот GigaChat;
+}
+
+:Формирование финального ответа\n{status, results, analysis,\n recommendations, context};
+
+:Возврат ответа пользователю\nHTTP 200 OK;
+
+stop
+
+@enduml

@@ -4,20 +4,31 @@ Go сервис для анализа состояния Kubernetes класте
 
 ## Архитектура
 
-```
-┌─────────────┐         HTTP          ┌──────────────┐         MCP          ┌─────────────┐
-│   Пользователь   │ ──────────────> │  Go AI HUB     │ ─────────────────> │  MCP Server │
-│                 │                  │  Сервис      │                     │  (kagent-   │
-│                 │ <──────────────  │  (kagent)  │ <───────────────── │  tools)     │
-└─────────────┘         JSON         └──────────────┘         JSON         └─────────────┘
-                                                                    │
-                                                                    │ Выполняет tools
-                                                                    ▼
-                                                          ┌─────────────┐
-                                                          │ Kubernetes  │
-                                                          │   Cluster   │
-                                                          └─────────────┘
-```
+Этот проект реализует **MCP Client**, который используется внутри **DAAI (Master Service)** для взаимодействия с MCP Server.
+
+### Полная архитектура DAAI System
+
+Система состоит из следующих компонентов:
+
+- **DAAI (Master Service)** - центральный сервис с эндпоинтами `agent_action_1`, `agent_action_2`, ...
+- **MCP Client** - клиент для взаимодействия с MCP Server (реализован в этом проекте)
+- **KaaS** - сервис управления кластерами (REST/gRPC), предоставляет информацию о кластерах
+- **MCP Server (kmcp)** - сервер в Parent Cluster, запускающий kagent tools
+- **kagent tools** - инструменты для анализа Kubernetes кластеров из [kagent-dev/tools](https://github.com/kagent-dev/tools)
+- **Parent Cluster** - основной Kubernetes кластер, содержащий множество Children Clusters
+- **Children Clusters** - дочерние Kubernetes кластеры для анализа
+- **Postgres (Pangolin) / Clickhouse** - базы данных для логирования метаданных и метрик
+
+### Диаграммы
+
+Подробная архитектура описана в [docs/DAAI_ARCHITECTURE.md](docs/DAAI_ARCHITECTURE.md)
+
+Визуальные диаграммы доступны в [docs/diagrams/](docs/diagrams/):
+- **Sequence диаграмма** (`sequence.puml`) - последовательность взаимодействий между компонентами
+- **Process диаграмма** (`process.puml`) - детальный процесс обработки запроса с ветвлениями
+- **Architecture диаграмма** (`architecture.puml`) - общая архитектура системы с компонентами
+
+См. [docs/diagrams/README.md](docs/diagrams/README.md) для инструкций по просмотру и генерации диаграмм.
 
 ## Компоненты
 

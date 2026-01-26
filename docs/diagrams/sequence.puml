@@ -1,0 +1,111 @@
+@startuml Sequence Diagram - DropApp Architecture
+
+!theme plain
+skinparam sequenceMessageAlign center
+skinparam roundcorner 20
+skinparam maxmessagesize 60
+
+actor "Пользователь\n(консоль)" as User
+participant "DropApp AI Hub\n(Master Service)" as DAAI
+database "Postgres\n(Pangolin)" as Postgres
+database "Clickhouse" as Clickhouse
+participant "KaaS\n(REST/gRPC)" as KaaS
+participant "MCP Client\n(внутри DropApp AI Hub)" as MCPClient
+participant "MCP Server\n(kmcp)\nParent Cluster" as MCPServer
+participant "kagent tools" as Tools
+participant "IDP\n(RAG)" as IDP
+participant "GigaChat\nLLM" as GigaChat
+participant "Parent Cluster Kubernetes" as ParentCluster
+participant "Children Cluster Kubernetes" as ChildCluster
+
+== Инициализация запроса ==
+
+User -> DAAI: POST /agent_action_1\n{clusterId, action, params}
+activate DAAI
+
+== Логирование ==
+
+DAAI -> Postgres: Логирование запроса\n(метаданные, timestamp)
+DAAI -> Clickhouse: Логирование запроса\n(метрики, события)
+
+== Бизнес-логика DAAI ==
+
+DAAI -> DAAI: Авторизация пользователя
+DAAI -> DAAI: Валидация запроса
+DAAI -> DAAI: Обработка бизнес-логики
+
+== Получение информации о кластере ==
+
+DAAI -> KaaS: REST/gRPC запрос\nПолучить информацию о кластере\n{clusterId}
+activate KaaS
+KaaS -> KaaS: Определение кластера\n(Parent/Child)
+KaaS --> DAAI: Информация о кластере\n{clusterType, kubeconfig, endpoint}
+deactivate KaaS
+
+== Формирование запроса к MCP ==
+
+DAAI -> MCPClient: Вызов tools\n{toolNames, parameters, clusterInfo}
+activate MCPClient
+
+== Вызов MCP Server ==
+
+MCPClient -> MCPServer: MCP Request\nPOST /mcp\n{method: "tools/call",\n name: "kubectl_get_pods",\n arguments: {...}}
+activate MCPServer
+
+== Выполнение tools ==
+
+MCPServer -> Tools: Запуск tool\n{kubectl_get_pods}
+activate Tools
+
+alt Анализ Parent Cluster
+    Tools -> ParentCluster: kubectl get pods\n--namespace=default
+    activate ParentCluster
+    ParentCluster --> Tools: Результаты анализа\n{pods: [...], count: N}
+    deactivate ParentCluster
+else Анализ Children Cluster
+    Tools -> ChildCluster: kubectl get pods\n--namespace=default\n--context=child-cluster
+    activate ChildCluster
+    ChildCluster --> Tools: Результаты анализа\n{pods: [...], count: M}
+    deactivate ChildCluster
+end
+
+Tools --> MCPServer: Результаты выполнения tool
+deactivate Tools
+
+== Возврат результатов ==
+
+MCPServer --> MCPClient: MCP Response\n{result: {...}, error: null}
+deactivate MCPServer
+
+MCPClient --> DAAI: Результаты tools\n{toolResults: {...}}
+deactivate MCPClient
+
+== Финальная обработка ==
+
+DAAI -> DAAI: Обработка результатов\nАгрегация данных
+DAAI -> Postgres: Логирование результата
+DAAI -> Clickhouse: Логирование метрик
+
+== Получение контекста из документации ==
+
+DAAI -> IDP: RAG запрос\nПолучить контекст из документации\n{query: результаты анализа,\n clusterId, toolNames}
+activate IDP
+IDP -> IDP: Поиск релевантной документации\nВекторный поиск
+IDP --> DAAI: Контекст из документации\n{relevantDocs: [...],\n context: "..."}
+deactivate IDP
+
+== Обработка через LLM GigaChat ==
+
+DAAI -> GigaChat: LLM запрос\n{results: toolResults,\n context: IDP_context,\n prompt: "Обработай результаты..."}
+activate GigaChat
+GigaChat -> GigaChat: Анализ результатов\nГенерация ответа с контекстом
+GigaChat --> DAAI: Обработанный ответ\n{analysis: "...",\n recommendations: [...],\n summary: "..."}
+deactivate GigaChat
+
+== Ответ пользователю ==
+
+DAAI -> DAAI: Формирование финального ответа\n{results, analysis, context}
+DAAI --> User: HTTP Response\n{status: "success",\n results: {...},\n analysis: "...",\n recommendations: [...]}
+deactivate DAAI
+
+@enduml
