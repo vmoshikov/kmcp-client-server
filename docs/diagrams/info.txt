@@ -1,0 +1,21 @@
+UI клауда отправляет запрос в AI Hub API: POST /api/v1/tasks с входными данными, целевым кластером и контекстом.
+AI Hub API выполняет аутентификацию/авторизацию, валидацию и маршрутизацию по агенту.
+Будущее (Future): AI Hub передаёт запрос в агента (внутри AI Hub). Агент обращается к MIP, который вызывает LLM и получает план (список функций/tools, маппинг входов и ограничения). Агент применяет бизнес-правила, валидирует план и возвращает в AI Hub обогащённый taskSpec с executionPlan.
+Сейчас (Current): AI Hub не делает планирование через MIP/LLM, а просто принимает запрос и формирует taskSpec для постановки задачи.
+AI Hub создаёт задачу в Operation Service API (CreateTask), Operation Service сохраняет Task со статусом QUEUED и возвращает taskId. AI Hub возвращает UI ответ 202 Accepted с taskId.
+В Parent Cluster компонент Operation Service Controller подписывается на задачи (watch/list QUEUED) и получает событие о новой Task.
+Controller определяет, какие функции/tools нужно выполнить, и выбирает целевой Child Cluster.
+Сейчас: контроллер сам определяет список функций/tools.
+Будущее: контроллер берёт готовый executionPlan, пришедший в taskSpec от агента AI Hub, и валидирует его.
+Controller отправляет команду на выполнение в kmcp-controller в Child Cluster (ExecuteTask), передавая taskId, список функций и входные параметры.
+В Child Cluster kmcp-controller выполняет функции:
+Сейчас: функции исполняются локально через Tools Runtime в Child Cluster (по одной в цикле, с возвратом результата/ошибки).
+Будущее: kmcp-controller запрашивает определения функций в Function Registry и исполняет их, возвращая результаты.
+После завершения выполнения kmcp-controller возвращает результаты в Operation Service Controller (outputs, логи, статус).
+Сейчас (Current): уже после выполнения в Child Cluster контроллер может запустить обработку результата через MIP/LLM:
+Controller отправляет результаты в MIP,
+MIP вызывает LLM для интерпретации результатов и формирования вывода/рекомендаций,
+MIP возвращает контроллеру итоговую структуру (summary/recommendations/structuredOutput).
+Будущее (Future): обработка/планирование делается на уровне агента в AI Hub, поэтому контроллер просто сохраняет результаты, без MIP/LLM на своём уровне.
+Controller обновляет Task в Operation Service API (UpdateTask), выставляя итоговый статус SUCCEEDED|FAILED и сохраняя ссылки/данные outputs и logs.
+Опционально: UI запрашивает статус и результат по taskId через AI Hub (GET /api/v1/tasks/{taskId}), AI Hub читает Task из Operation Service и возвращает UI текущий статус и результаты.
