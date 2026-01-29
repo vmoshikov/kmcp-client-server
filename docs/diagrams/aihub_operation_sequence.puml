@@ -1,0 +1,139 @@
+@startuml Sequence Diagram - AI Hub -> Operation Service -> kmcp-controller
+
+!theme plain
+skinparam sequenceMessageAlign center
+skinparam roundcorner 20
+skinparam maxmessagesize 70
+
+autonumber
+
+actor "UI Клауда" as CloudUI
+
+box "AI Hub" #EEF6FF
+  participant "AI Hub API" as AIHub
+  participant "Agent\n(business logic)\n(будущее)" as Agent
+end box
+
+box "Operation Service" #F3FFF1
+  participant "Operation Service API\n(Task Broker)" as OSAPI
+end box
+
+box "Parent Cluster\nKubernetes" #FFF7E6
+  participant "Operation Service Controller\n(Watcher/Scheduler)" as OSCtrl
+end box
+
+box "Child Cluster\nKubernetes" #F7F2FF
+  participant "kmcp-controller" as KMCP
+  participant "Tools Runtime\n(сейчас внутри Child)" as ToolsRuntime
+end box
+
+box "AI Assist" #F0FBFF
+  participant "MIP\n(планировщик/оркестратор)" as MIP
+  participant "LLM" as LLM
+end box
+
+participant "Function Registry\n(будущее)" as FuncRegistry
+
+== Приём запроса и создание Task ==
+
+CloudUI -> AIHub: POST /api/v1/tasks\n{agent, input, targetCluster, context}
+activate AIHub
+AIHub -> AIHub: Аутентификация/авторизация + валидация\n+ маршрутизация по агенту
+
+alt Future (будущее: планирование/обработка на уровне агента в AI Hub)
+  AIHub -> Agent: Передать запрос агенту\n{agent, input, context}
+  activate Agent
+  Agent -> MIP: Запрос на план\n{цель, контекст, политики}
+  activate MIP
+  MIP -> LLM: Промпт\n"Сформируй план и список функций"
+  activate LLM
+  LLM --> MIP: План\n{functions[], inputsMapping, constraints}
+  deactivate LLM
+  MIP --> Agent: План выполнения\n{functions[], inputsMapping}
+  deactivate MIP
+  Agent -> Agent: Применить бизнес-правила\n+ валидировать план
+  Agent --> AIHub: Обогащённый taskSpec\n{executionPlan, inputs}
+  deactivate Agent
+else Current (сейчас: AI Hub просто принимает запрос и создаёт Task)
+  AIHub -> AIHub: Проброс без MIP/LLM на этом уровне
+end
+
+AIHub -> OSAPI: CreateTask(taskSpec)\n(создать Task)
+activate OSAPI
+OSAPI -> OSAPI: Сохранить Task\n(status=QUEUED)
+OSAPI --> AIHub: 202 Accepted\n{taskId, status}
+deactivate OSAPI
+
+AIHub --> CloudUI: 202 Accepted\n{taskId, status}
+deactivate AIHub
+
+== Обработка Task в Parent Cluster ==
+
+OSCtrl -> OSAPI: Watch/List Tasks\n(status=QUEUED)
+activate OSCtrl
+activate OSAPI
+OSAPI --> OSCtrl: Task event\n{taskId, taskSpec}
+deactivate OSAPI
+
+alt Current (сейчас: контроллер сам определяет функции для выполнения)
+  OSCtrl -> OSCtrl: Определить набор функций/tools\n+ выбрать Child Cluster (targetCluster)
+else Future (будущее: план уже пришёл в Task от агента AI Hub)
+  OSCtrl -> OSCtrl: Валидировать executionPlan (из taskSpec)\n+ выбрать Child Cluster (targetCluster)
+end
+
+OSCtrl -> KMCP: ExecuteTask\n{taskId, functions[], inputs, targetCluster}\n(запустить выполнение)
+activate KMCP
+
+alt Current (сейчас: функции исполняются в Child Cluster)
+  loop for each function/tool
+    KMCP -> ToolsRuntime: Execute(functionName, args)
+    activate ToolsRuntime
+    ToolsRuntime --> KMCP: Result/Artifact\n{ok|error, output}
+    deactivate ToolsRuntime
+  end
+else Future (будущее: функции подтягиваются из Function Registry)
+  loop for each function/tool
+    KMCP -> FuncRegistry: GetFunction(functionName)\n(signature, image/ref, policy)
+    activate FuncRegistry
+    FuncRegistry --> KMCP: Function definition\n{runtimeRef, metadata}
+    deactivate FuncRegistry
+    KMCP -> KMCP: Resolve + execute function\n(using runtimeRef)
+    KMCP --> KMCP: Result/Artifact\n{ok|error, output}
+  end
+end
+
+KMCP --> OSCtrl: Результаты выполнения\n{outputs, logs, status}
+deactivate KMCP
+
+alt Current (сейчас: обработка результата с MIP/LLM на уровне Operation Service Controller\nпосле выполнения в Child Cluster)
+  OSCtrl -> MIP: Запрос на обработку результата\n{taskId, outputs, logs, контекст}
+  activate MIP
+  MIP -> LLM: Промпт\n"Интерпретируй результаты, сформируй вывод/следующие шаги"
+  activate LLM
+  LLM --> MIP: Обработанный результат\n{summary, recommendations, structuredOutput}
+  deactivate LLM
+  MIP --> OSCtrl: Итог обработки\n{summary, recommendations, structuredOutput}
+  deactivate MIP
+else Future (будущее: обработка/планирование на уровне агента в AI Hub)
+  OSCtrl -> OSCtrl: Сохранить результаты исполнения\n(без MIP/LLM на этом уровне)
+end
+
+OSCtrl -> OSAPI: UpdateTask\n{taskId, status=SUCCEEDED|FAILED,\n outputs, logsRefs}
+activate OSAPI
+OSAPI --> OSCtrl: ACK
+deactivate OSAPI
+
+deactivate OSCtrl
+
+== (Опционально) получение результата ==
+
+CloudUI -> AIHub: GET /api/v1/tasks/{taskId}
+activate AIHub
+AIHub -> OSAPI: GetTask(taskId)
+activate OSAPI
+OSAPI --> AIHub: Task\n{status, outputs, logsRefs}
+deactivate OSAPI
+AIHub --> CloudUI: 200 OK\n{status, outputs, logsRefs}
+deactivate AIHub
+
+@enduml
